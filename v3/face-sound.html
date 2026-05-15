@@ -1,0 +1,644 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>FU v3 Serial Viewer</title>
+<style>
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0; padding: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+  background: #0d1117; color: #c9d1d9;
+  height: 100vh;
+  overflow: hidden;          /* page doesn't grow — log scrolls inside its panel */
+  display: flex; flex-direction: column;
+}
+header {
+  padding: 12px 20px; background: #161b22; border-bottom: 1px solid #30363d;
+  display: flex; gap: 16px; align-items: center; flex-wrap: wrap;
+}
+header h1 { margin: 0; font-size: 18px; font-weight: 600; }
+header .sub { color: #6e7681; font-size: 12px; }
+header .spacer { flex: 1; }
+button {
+  background: #238636; color: #fff; border: none;
+  border-radius: 6px; padding: 8px 18px; font-size: 14px; font-weight: 600;
+  cursor: pointer;
+}
+button:hover { background: #2ea043; }
+button:disabled { background: #6e7681; cursor: not-allowed; }
+button.danger { background: #da3633; }
+button.danger:hover { background: #f85149; }
+.conn-state {
+  padding: 4px 12px; border-radius: 999px; font-size: 12px; font-weight: 600;
+}
+.conn-state.disconnected { background: #21262d; color: #6e7681; }
+.conn-state.connected { background: #1f3a1f; color: #3fb950; }
+.conn-state.error { background: #3a1f1f; color: #f85149; }
+
+main {
+  flex: 1; display: grid;
+  grid-template-columns: 1fr 360px; gap: 16px;
+  padding: 16px;
+  min-height: 0;
+}
+
+.target-pane {
+  display: flex; flex-direction: column; align-items: center;
+  justify-content: center;
+  gap: 12px;
+  background: #161b22; border: 1px solid #30363d; border-radius: 12px;
+  padding: 20px;
+}
+.target-wrap {
+  position: relative;
+  width: min(70vh, 100%, 600px);
+  aspect-ratio: 1;
+}
+#target {
+  width: 100%; height: 100%;
+  background: #0d1117;
+  border: 1px solid #30363d; border-radius: 8px;
+  display: block;
+}
+.target-title {
+  font-size: 13px; color: #6e7681; margin-top: 4px;
+}
+
+.right-pane {
+  display: flex; flex-direction: column; gap: 12px;
+  min-height: 0;
+  overflow: hidden;          /* contain children inside grid cell */
+}
+.stats {
+  background: #161b22; border: 1px solid #30363d; border-radius: 12px;
+  padding: 16px;
+}
+.stats h2 { margin: 0 0 12px 0; font-size: 14px; color: #8b949e; font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px;}
+.kv { display: flex; justify-content: space-between; padding: 5px 0; font-size: 14px; }
+.kv .k { color: #8b949e; }
+.kv .v { color: #58a6ff; font-family: SF Mono, Menlo, monospace; font-weight: 600; }
+.kv.warn .v { color: #d29922; }
+.kv.ok .v { color: #3fb950; }
+.kv.off .v { color: #6e7681; }
+
+.state-badge {
+  display: inline-block;
+  padding: 4px 12px; border-radius: 999px;
+  font-family: SF Mono, Menlo, monospace; font-size: 13px; font-weight: 700;
+}
+.state-badge.FRESH { background: #1f3a1f; color: #3fb950; }
+.state-badge.HOLD { background: #3a2f1f; color: #d29922; }
+.state-badge.OFF { background: #21262d; color: #6e7681; }
+
+.conf-bar {
+  height: 8px; background: #21262d; border-radius: 4px; overflow: hidden;
+  margin-top: 4px;
+}
+.conf-bar > .fill {
+  height: 100%; background: linear-gradient(90deg, #d29922, #3fb950);
+  transition: width 100ms linear;
+}
+
+.spectrum-pane canvas {
+  width: 100%;
+  height: 140px;
+  background: #0d1117;
+  border: 1px solid #30363d; border-radius: 6px;
+  display: block;
+  margin: 8px 0;
+}
+.band-controls {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 12px; color: #8b949e;
+  margin: 4px 0 6px 0;
+  flex-wrap: wrap;
+}
+.band-controls input[type=number] {
+  background: #21262d; color: #c9d1d9; border: 1px solid #30363d;
+  border-radius: 4px; padding: 2px 6px;
+  width: 50px; font-size: 12px;
+  font-family: SF Mono, Menlo, monospace;
+}
+.band-hz {
+  font-family: SF Mono, Menlo, monospace; font-size: 11px;
+  color: #58a6ff;
+  padding: 2px 8px; background: #21262d; border-radius: 4px;
+}
+
+.log {
+  background: #161b22; border: 1px solid #30363d; border-radius: 12px;
+  padding: 12px;
+  flex: 1; min-height: 120px;            /* always shows at least a few lines */
+  display: flex; flex-direction: column;
+  overflow: hidden;                       /* constrain so inner .log-lines scrolls */
+}
+.log h2 { margin: 0 0 8px 0; font-size: 14px; color: #8b949e; font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px;}
+.log-lines {
+  flex: 1 1 auto;
+  min-height: 0;             /* required so flex child can shrink and scroll */
+  overflow-y: auto;
+  overflow-x: hidden;
+  font-family: SF Mono, Menlo, monospace; font-size: 11px;
+  color: #6e7681;
+  white-space: pre-wrap; word-break: break-all;
+  line-height: 1.5;
+}
+.log-lines .err { color: #f85149; }
+.log-lines .info { color: #58a6ff; }
+
+footer {
+  padding: 8px 20px; background: #161b22; border-top: 1px solid #30363d;
+  font-size: 11px; color: #6e7681;
+  display: flex; gap: 16px; flex-wrap: wrap;
+}
+.warn-banner {
+  display: none;
+  background: #3a2f1f; color: #d29922;
+  padding: 12px 20px; font-size: 13px; text-align: center;
+  border-bottom: 1px solid #d29922;
+}
+.warn-banner.show { display: block; }
+
+@media (max-width: 900px) {
+  main { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+
+<div class="warn-banner" id="warn"></div>
+
+<header>
+  <h1>FU v3 Serial Viewer</h1>
+  <span class="sub">XIAO ESP32-S3 Sense — face center via Web Serial</span>
+  <div class="spacer"></div>
+  <span class="conn-state disconnected" id="connState">disconnected</span>
+  <button id="connectBtn">Connect</button>
+  <button id="disconnectBtn" class="danger" style="display:none">Disconnect</button>
+</header>
+
+<main>
+
+  <div class="target-pane">
+    <div class="target-wrap">
+      <canvas id="target" width="600" height="600"></canvas>
+    </div>
+    <div class="target-title">Face center on camera FOV (normalized -1..+1, center crosshair = camera optical axis)</div>
+  </div>
+
+  <div class="right-pane">
+
+    <div class="stats">
+      <h2>Detection</h2>
+      <div class="kv"><span class="k">state</span><span class="v"><span id="state" class="state-badge OFF">OFF</span></span></div>
+      <div class="kv"><span class="k">age (frames)</span><span class="v" id="age">-</span></div>
+      <div class="kv"><span class="k">cx (norm)</span><span class="v" id="cx">-</span></div>
+      <div class="kv"><span class="k">cy (norm)</span><span class="v" id="cy">-</span></div>
+      <div class="kv"><span class="k">conf</span><span class="v" id="conf">-</span></div>
+      <div class="conf-bar"><div class="fill" id="confFill" style="width:0%"></div></div>
+      <div class="kv"><span class="k">faces this frame</span><span class="v" id="n">0</span></div>
+    </div>
+
+    <div class="stats">
+      <h2>I2C-ready encoding</h2>
+      <div class="kv"><span class="k">i2c_x (int8)</span><span class="v" id="i2cx">0</span></div>
+      <div class="kv"><span class="k">i2c_y (int8)</span><span class="v" id="i2cy">0</span></div>
+      <div class="kv"><span class="k">i2c_conf (uint8)</span><span class="v" id="i2cc">0</span></div>
+      <div class="kv"><span class="k">hex payload</span><span class="v" id="hex">00 00 00</span></div>
+    </div>
+
+    <div class="stats">
+      <h2>Audio (PDM mic)</h2>
+      <div class="kv"><span class="k">audio_rms (raw)</span><span class="v" id="audioRms">0</span></div>
+      <div class="conf-bar" title="0..8000 normalized; clap/loud reaches 10000+">
+        <div class="fill" id="audioFill" style="width:0%;background:linear-gradient(90deg,#58a6ff,#3fb950)"></div>
+      </div>
+      <div class="kv"><span class="k">peak (rolling)</span><span class="v" id="audioPeak">0</span></div>
+    </div>
+
+    <div class="stats spectrum-pane">
+      <h2>Spectrum (64 bins, 0..8 kHz, 125 Hz/bin)</h2>
+      <canvas id="spectrum" width="640" height="180"></canvas>
+      <div class="band-controls">
+        <label>Watch band:</label>
+        <input type="number" id="bandLo" min="0" max="63" step="1" value="16" /> -
+        <input type="number" id="bandHi" min="0" max="63" step="1" value="32" />
+        <span id="bandHz" class="band-hz">2000..4000 Hz</span>
+        <span class="kv" style="margin-left:auto">
+          <span class="k">band level</span><span class="v" id="bandLevel">0</span>
+        </span>
+      </div>
+      <div class="conf-bar">
+        <div class="fill" id="bandFill" style="width:0%;background:linear-gradient(90deg,#bb83ff,#f85149)"></div>
+      </div>
+    </div>
+
+    <div class="stats">
+      <h2>System</h2>
+      <div class="kv"><span class="k">fps_det</span><span class="v" id="fps">-</span></div>
+      <div class="kv"><span class="k">device uptime</span><span class="v" id="uptime">-</span></div>
+      <div class="kv"><span class="k">lines received</span><span class="v" id="rxlines">0</span></div>
+      <div class="kv"><span class="k">parse errors</span><span class="v" id="rxerr">0</span></div>
+    </div>
+
+    <div class="log">
+      <h2>Raw log</h2>
+      <div class="log-lines" id="log"></div>
+    </div>
+
+  </div>
+</main>
+
+<footer>
+  <span>Chrome (or Edge) required for Web Serial. Click Connect → pick <code>cu.usbmodem*</code> port at 115200 baud.</span>
+</footer>
+
+<script>
+// =========================================================
+// Web Serial Viewer for FU v3 Camera Test firmware (v3.0.9+)
+// =========================================================
+
+const $ = id => document.getElementById(id);
+const elState   = $('state');
+const elAge     = $('age');
+const elCx      = $('cx');
+const elCy      = $('cy');
+const elConf    = $('conf');
+const elConfFill = $('confFill');
+const elN       = $('n');
+const elI2cx    = $('i2cx');
+const elI2cy    = $('i2cy');
+const elI2cc    = $('i2cc');
+const elHex     = $('hex');
+const elFps     = $('fps');
+const elUptime  = $('uptime');
+const elAudioRms  = $('audioRms');
+const elAudioFill = $('audioFill');
+const elAudioPeak = $('audioPeak');
+const elSpec      = $('spectrum');
+const ctxSpec     = elSpec.getContext('2d');
+const elBandLo    = $('bandLo');
+const elBandHi    = $('bandHi');
+const elBandHz    = $('bandHz');
+const elBandLevel = $('bandLevel');
+const elBandFill  = $('bandFill');
+const elRxLines = $('rxlines');
+const elRxErr   = $('rxerr');
+const elLog     = $('log');
+const elConnState = $('connState');
+const elWarn    = $('warn');
+const btnConn   = $('connectBtn');
+const btnDisc   = $('disconnectBtn');
+
+const canvas = $('target');
+const ctx = canvas.getContext('2d');
+
+let port = null;
+let reader = null;
+let stopRequested = false;
+let lineBuf = '';
+let rxLines = 0;
+let rxErrors = 0;
+let lastData = null;
+let audioPeak = 0;
+// Per-bin decaying peak overlay
+const specPeaks = new Array(64).fill(0);
+// Band watch range (bin indices); 16-32 = 2000-4000 Hz (bird-call band default)
+let bandLo = 16, bandHi = 32;
+
+// ----- Web Serial availability check -----
+if (!('serial' in navigator)) {
+  elWarn.classList.add('show');
+  elWarn.textContent = 'navigator.serial is not available. Use Chrome 89+ or Edge over HTTPS / file:// / localhost.';
+  btnConn.disabled = true;
+}
+
+// ----- Canvas drawing -----
+function drawTarget(data) {
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+
+  // FOV background grid (subtle)
+  ctx.strokeStyle = '#21262d';
+  ctx.lineWidth = 1;
+  for (let i = 1; i < 10; i++) {
+    const x = i * W / 10;
+    const y = i * H / 10;
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+  }
+
+  // Center crosshair
+  ctx.strokeStyle = '#30363d';
+  ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(W / 2, 0); ctx.lineTo(W / 2, H); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(0, H / 2); ctx.lineTo(W, H / 2); ctx.stroke();
+
+  // Concentric rings (visual scale)
+  ctx.strokeStyle = '#30363d';
+  for (let r of [0.25, 0.5, 0.75, 1.0]) {
+    ctx.beginPath();
+    ctx.arc(W / 2, H / 2, r * (W / 2), 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  // Axis labels
+  ctx.fillStyle = '#6e7681';
+  ctx.font = '11px monospace';
+  ctx.fillText('-1', 4, H / 2 - 4);
+  ctx.fillText('+1', W - 18, H / 2 - 4);
+  ctx.fillText('-1', W / 2 + 4, 12);
+  ctx.fillText('+1', W / 2 + 4, H - 4);
+
+  if (!data || !data.valid) return;
+
+  // Face position dot
+  // cx, cy in [-1, +1]; map to canvas
+  const px = (data.cx + 1) * W / 2;
+  const py = (data.cy + 1) * H / 2;
+
+  const color = data.state === 'FRESH' ? '#3fb950'
+              : data.state === 'HOLD'  ? '#d29922'
+              :                          '#6e7681';
+
+  // Conf-sized dot (5..30 px)
+  const radius = 6 + Math.min(0.9, Math.max(0, data.conf)) * 24;
+
+  // Outer glow
+  ctx.shadowColor = color;
+  ctx.shadowBlur = 16;
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.arc(px, py, radius, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+
+  // White core
+  ctx.fillStyle = '#ffffff';
+  ctx.beginPath();
+  ctx.arc(px, py, 3, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Coord label
+  ctx.fillStyle = color;
+  ctx.font = '13px monospace';
+  const txt = `(${data.cx.toFixed(2)}, ${data.cy.toFixed(2)})`;
+  ctx.fillText(txt, px + radius + 8, py - 4);
+}
+
+// ----- Spectrum drawing -----
+function drawSpectrum(spec) {
+  const W = elSpec.width, H = elSpec.height;
+  ctxSpec.clearRect(0, 0, W, H);
+  ctxSpec.fillStyle = '#0d1117';
+  ctxSpec.fillRect(0, 0, W, H);
+  ctxSpec.strokeStyle = '#21262d';
+  ctxSpec.lineWidth = 1;
+  for (let g = 1; g < 4; g++) {
+    const y = H - (g * H / 4);
+    ctxSpec.beginPath(); ctxSpec.moveTo(0, y); ctxSpec.lineTo(W, y); ctxSpec.stroke();
+  }
+  const N = 64;
+  const barW = W / N;
+  const lo = Math.min(bandLo, bandHi);
+  const hi = Math.max(bandLo, bandHi);
+  // Band-watch highlight (purple, low alpha)
+  ctxSpec.fillStyle = '#bb83ff1a';
+  ctxSpec.fillRect(lo * barW, 0, (hi - lo + 1) * barW, H);
+  for (let i = 0; i < N; i++) {
+    const v = spec[i] | 0;
+    const norm = v / 255;
+    const h = norm * H;
+    const x = i * barW;
+    const y = H - h;
+    const hue = 200 - (i / N) * 220;
+    ctxSpec.fillStyle = `hsl(${hue},75%,${30 + norm * 30}%)`;
+    ctxSpec.fillRect(x + 0.5, y, barW - 1, h);
+    specPeaks[i] = Math.max(v, specPeaks[i] * 0.94);
+    const py = H - (specPeaks[i] / 255) * H;
+    ctxSpec.fillStyle = '#fff';
+    ctxSpec.fillRect(x + 0.5, py - 1, barW - 1, 2);
+  }
+  ctxSpec.fillStyle = '#6e7681';
+  ctxSpec.font = '10px monospace';
+  const labels = [[0,'0'],[8,'1k'],[16,'2k'],[32,'4k'],[48,'6k'],[63,'8k']];
+  for (const [bin, txt] of labels) {
+    ctxSpec.fillText(txt, bin * barW + 2, H - 2);
+  }
+}
+
+function updateBandWatch(spec) {
+  const lo = Math.min(bandLo, bandHi);
+  const hi = Math.max(bandLo, bandHi);
+  let sum = 0;
+  for (let i = lo; i <= hi; i++) sum += (spec[i] | 0);
+  const avg = sum / (hi - lo + 1);
+  elBandLevel.textContent = avg.toFixed(0);
+  elBandFill.style.width = Math.min(100, (avg / 255) * 100) + '%';
+}
+
+function updateBandHzLabel() {
+  const HZ_PER_BIN = 125;
+  const lo = Math.min(bandLo, bandHi);
+  const hi = Math.max(bandLo, bandHi);
+  elBandHz.textContent = lo * HZ_PER_BIN + '..' + (hi + 1) * HZ_PER_BIN + ' Hz';
+}
+
+elBandLo.addEventListener('input', e => {
+  const v = parseInt(e.target.value, 10);
+  if (!isNaN(v)) { bandLo = Math.max(0, Math.min(63, v)); updateBandHzLabel(); }
+});
+elBandHi.addEventListener('input', e => {
+  const v = parseInt(e.target.value, 10);
+  if (!isNaN(v)) { bandHi = Math.max(0, Math.min(63, v)); updateBandHzLabel(); }
+});
+updateBandHzLabel();
+
+// ----- UI update -----
+function applyData(d) {
+  lastData = d;
+  const state = d.state || 'OFF';
+  const valid = state === 'FRESH' || state === 'HOLD';
+  const cx = d.cx ?? 0, cy = d.cy ?? 0, conf = d.conf ?? 0;
+
+  // State badge
+  elState.className = 'state-badge ' + state;
+  elState.textContent = state;
+
+  elAge.textContent = (d.age ?? 0).toString();
+  elCx.textContent  = cx.toFixed(3);
+  elCy.textContent  = cy.toFixed(3);
+  elConf.textContent = conf.toFixed(3);
+  elConfFill.style.width = (Math.min(1, Math.max(0, conf)) * 100) + '%';
+  elN.textContent   = (d.n ?? 0).toString();
+  elFps.textContent = (d.fps ?? 0).toFixed(1);
+
+  if (d.t !== undefined) {
+    const sec = Math.floor(d.t / 1000);
+    const m = Math.floor(sec / 60), s = sec % 60;
+    elUptime.textContent = `${m}m${s}s`;
+  }
+
+  // Audio RMS (raw 0..32767; 8000 ~ normal speech ceiling)
+  if (d.audio_rms !== undefined) {
+    const rms = d.audio_rms | 0;
+    elAudioRms.textContent = rms.toString();
+    const pct = Math.min(100, (rms / 8000) * 100);
+    elAudioFill.style.width = pct + '%';
+    if (rms > audioPeak) audioPeak = rms;
+    else audioPeak = Math.max(rms, audioPeak * 0.995);
+    elAudioPeak.textContent = (audioPeak | 0).toString();
+  }
+
+  // Spectrum (64 bins, each value 0..255 representing dB)
+  if (Array.isArray(d.spec) && d.spec.length === 64) {
+    drawSpectrum(d.spec);
+    updateBandWatch(d.spec);
+  }
+
+  // I2C encoding (compute from cx/cy/conf — matches firmware lroundf(v*127))
+  const clampI8 = v => {
+    let q = Math.round(v * 127);
+    if (q < -127) q = -127;
+    if (q >  127) q =  127;
+    return q;
+  };
+  const clampU8 = v => Math.max(0, Math.min(255, Math.round(v * 255)));
+  const i2cx = valid ? clampI8(cx) : 0;
+  const i2cy = valid ? clampI8(cy) : 0;
+  const i2cc = valid ? clampU8(conf) : 0;
+  elI2cx.textContent = i2cx.toString();
+  elI2cy.textContent = i2cy.toString();
+  elI2cc.textContent = i2cc.toString();
+
+  // Hex payload preview (3-byte format)
+  const toHex = b => (b & 0xff).toString(16).padStart(2, '0').toUpperCase();
+  elHex.textContent = `${toHex(i2cx)} ${toHex(i2cy)} ${toHex(i2cc)}`;
+
+  // Color the state-dependent KV
+  elI2cx.style.color = valid ? '#58a6ff' : '#6e7681';
+  elI2cy.style.color = valid ? '#58a6ff' : '#6e7681';
+  elI2cc.style.color = valid ? '#58a6ff' : '#6e7681';
+
+  drawTarget({ valid, cx, cy, conf, state: d.state });
+}
+
+// ----- Log -----
+const MAX_LOG = 80;
+const logBuf = [];
+function logLine(text, cls) {
+  const ts = new Date().toLocaleTimeString();
+  const div = document.createElement('div');
+  if (cls) div.className = cls;
+  div.textContent = `[${ts}] ${text}`;
+  elLog.appendChild(div);
+  while (elLog.childNodes.length > MAX_LOG) elLog.removeChild(elLog.firstChild);
+  elLog.scrollTop = elLog.scrollHeight;
+}
+
+// ----- Serial reading -----
+async function connect() {
+  try {
+    btnConn.disabled = true;
+    elConnState.className = 'conn-state disconnected';
+    elConnState.textContent = 'connecting…';
+
+    port = await navigator.serial.requestPort();
+    await port.open({ baudRate: 115200 });
+
+    elConnState.className = 'conn-state connected';
+    elConnState.textContent = 'connected';
+    btnConn.style.display = 'none';
+    btnDisc.style.display = '';
+    logLine('connected', 'info');
+
+    stopRequested = false;
+    readLoop();
+  } catch (e) {
+    elConnState.className = 'conn-state error';
+    elConnState.textContent = 'error';
+    logLine('connect failed: ' + e.message, 'err');
+    btnConn.disabled = false;
+  }
+}
+
+async function disconnect() {
+  stopRequested = true;
+  try {
+    if (reader) {
+      await reader.cancel().catch(() => {});
+      try { reader.releaseLock(); } catch (e) {}
+      reader = null;
+    }
+    if (port) {
+      await port.close().catch(() => {});
+      port = null;
+    }
+  } catch (e) {
+    logLine('disconnect error: ' + e.message, 'err');
+  }
+  elConnState.className = 'conn-state disconnected';
+  elConnState.textContent = 'disconnected';
+  btnConn.style.display = '';
+  btnConn.disabled = false;
+  btnDisc.style.display = 'none';
+  logLine('disconnected', 'info');
+}
+
+async function readLoop() {
+  const decoder = new TextDecoder();
+  while (port && port.readable && !stopRequested) {
+    try {
+      reader = port.readable.getReader();
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        lineBuf += decoder.decode(value, { stream: true });
+        let nl;
+        while ((nl = lineBuf.indexOf('\n')) >= 0) {
+          const line = lineBuf.slice(0, nl).replace(/\r$/, '');
+          lineBuf = lineBuf.slice(nl + 1);
+          processLine(line);
+        }
+      }
+    } catch (e) {
+      logLine('read error: ' + e.message, 'err');
+      break;
+    } finally {
+      try { reader && reader.releaseLock(); } catch (e) {}
+      reader = null;
+    }
+    if (stopRequested) break;
+  }
+}
+
+function processLine(line) {
+  if (!line) return;
+  rxLines++;
+  elRxLines.textContent = rxLines.toString();
+  if (line.charAt(0) === '{') {
+    try {
+      const d = JSON.parse(line);
+      applyData(d);
+    } catch (e) {
+      rxErrors++;
+      elRxErr.textContent = rxErrors.toString();
+      logLine('JSON parse fail: ' + line.slice(0, 80), 'err');
+    }
+  } else {
+    // Human-readable (e.g. [STAT], [BOOT]) — show in log only
+    logLine(line);
+  }
+}
+
+btnConn.addEventListener('click', connect);
+btnDisc.addEventListener('click', disconnect);
+
+// Initial render
+drawTarget(null);
+</script>
+</body>
+</html>
