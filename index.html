@@ -1,0 +1,763 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>FU Workbench (Web Serial)</title>
+<script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js"></script>
+<style>
+  :root { color-scheme: dark; }
+  html, body {
+    margin: 0; padding: 0;
+    background: #14141f; color: #ddd;
+    font-family: -apple-system, "Helvetica Neue", "Segoe UI", "Hiragino Sans", "Noto Sans JP", sans-serif;
+    height: 100%;
+  }
+  body { display: grid; grid-template-rows: auto 1fr auto; height: 100vh; }
+  header { padding: 8px 14px; background: #1a1a26; border-bottom: 1px solid #333; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  header h1 { font-size: 14px; margin: 0; color: #aac; font-weight: 600; }
+  .status-pill { padding: 3px 8px; border-radius: 3px; font-size: 11px; background: #333; color: #aaa; border: 1px solid #555; }
+  .status-pill.ok { background: #1f6f2c; color: #fff; border-color: #2c8; }
+  .status-pill.warn { background: #663; color: #fff; border-color: #aa6; }
+  button { background: #2a2a3a; color: #fff; border: 1px solid #444; padding: 5px 12px; border-radius: 3px; font-size: 12px; cursor: pointer; }
+  button:hover:not(:disabled) { background: #3a3a4f; }
+  button:disabled { background: #1a1a26; color: #555; border-color: #2a2a2a; cursor: not-allowed; }
+  button.primary { background: #1f6f2c; border-color: #2c8; }
+  button.danger { background: #b22; border-color: #f55; font-weight: bold; }
+  main { display: grid; grid-template-columns: 320px 1fr 360px; min-height: 0; }
+  .panel { padding: 10px; border-right: 1px solid #333; overflow: auto; min-height: 0; }
+  .panel:last-child { border-right: none; }
+  .group { border: 1px solid #444; border-radius: 4px; padding: 8px; margin-bottom: 10px; }
+  .group.disabled { opacity: 0.45; pointer-events: none; }
+  .group > .title { font-size: 11px; color: #88a; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .row { display: flex; gap: 6px; align-items: center; margin-bottom: 4px; }
+  .row > input[type=range], .row > select { flex: 1 1 auto; }
+  label { font-size: 12px; color: #bbb; min-width: 60px; }
+  .val-mono { font-family: Menlo, Consolas, monospace; color: #6cf; }
+  input[type=range] { accent-color: #6cf; }
+  select, input[type=text] { background: #1a1a26; color: #fff; border: 1px solid #444; padding: 4px; border-radius: 3px; font-size: 12px; }
+  #threed { width: 100%; aspect-ratio: 1; min-height: 280px; background: #07070b; border-radius: 4px; }
+  .telem-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 10px; font-family: Menlo, Consolas, monospace; font-size: 12px; }
+  .telem-grid > .k { color: #88a; }
+  .telem-grid > .v { color: #6cf; text-align: right; }
+  #compass, #centroid { width: 100%; aspect-ratio: 1; max-width: 220px; margin: 0 auto; display: block; }
+  #log { background: #0d0d14; border: 1px solid #333; border-radius: 3px; padding: 6px; height: 180px; overflow: auto; font-family: Menlo, Consolas, monospace; font-size: 11px; line-height: 1.4; white-space: pre-wrap; word-break: break-all; }
+  .log-tx { color: #f96; } .log-rx { color: #6cf; } .log-err { color: #f66; } .log-info { color: #aaa; }
+  footer { padding: 6px 14px; background: #1a1a26; border-top: 1px solid #333; font-size: 11px; color: #888; }
+  .swatch { width: 32px; height: 18px; border: 1px solid #555; border-radius: 2px; }
+  .preset-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; margin-bottom: 6px; }
+  .preset-row button { width: 100%; }
+  .preset-white  { background: #f4f4f4; color: #000; border-color: #ccc; }
+  .preset-red    { background: #d33; color: #fff; border-color: #f55; }
+  .preset-green  { background: #1c8838; color: #fff; border-color: #2c8; }
+  .preset-blue   { background: #2848bb; color: #fff; border-color: #58c; }
+  .preset-sakura { background: #d56078; color: #fff; border-color: #f99; }
+  .preset-off    { background: #222; color: #888; border-color: #444; }
+  .browser-warn { background: #663; color: #fff; padding: 12px; text-align: center; font-size: 13px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>FU Workbench <span style="color:#777;font-weight:400;">(Web Serial)</span></h1>
+  <div id="serial-warn" class="browser-warn" style="display:none;flex:1;">
+    Web Serial API は <b>Chromium 系ブラウザ (Chrome / Edge / Arc / Brave)</b> でのみ動作します。
+  </div>
+  <div style="margin-left:auto;display:flex;gap:8px;align-items:center;">
+    <span id="unit-pill" class="status-pill">Not Connected</span>
+    <span id="fw-pill" class="status-pill" title="Firmware version reported via VER? query">FW: --</span>
+    <span id="rate-pill" class="status-pill">-- Hz</span>
+    <button id="btn-connect" class="primary">Connect</button>
+    <button id="btn-disconnect" disabled>Disconnect</button>
+  </div>
+</header>
+<main>
+  <div class="panel">
+    <fieldset id="g-stream" class="group">
+      <legend class="title">Telemetry stream (Unit1)</legend>
+      <div class="row">
+        <button id="btn-j">Start (j)</button>
+        <button id="btn-s">Stop (s)</button>
+        <button id="btn-g">GridEye: ?  (g)</button>
+      </div>
+    </fieldset>
+    <fieldset id="g-mode" class="group">
+      <legend class="title">Unit1 mode</legend>
+      <div class="row"><button id="btn-track-on" class="primary">Tracking ON (POS,90)</button><button id="btn-track-off">Tracking OFF (POS,0)</button></div>
+      <div class="row"><button id="btn-head-1">Heading (HEAD,1)</button><button id="btn-head-0">Winch (HEAD,0)</button></div>
+      <div class="row"><button id="btn-dbg-ready" style="width:100%;" title="USB単独デバッグ用: Winchから CAL,TUBE が来ない時、cal をバイパスして CAL_READY 強制 + INIT,MOTORS 送信。Winch 接続中の機体には使わない (cal の BNO mag/tare がスキップされる)">USB Debug Mode (bypass cal, DBG_READY)</button></div>
+    </fieldset>
+    <fieldset id="g-led" class="group">
+      <legend class="title">LED control (Unit1)</legend>
+      <div class="preset-row">
+        <button class="preset-white"  data-rgb="255,255,255">White</button>
+        <button class="preset-red"    data-rgb="255,0,0">Red</button>
+        <button class="preset-green"  data-rgb="0,255,0">Green</button>
+        <button class="preset-blue"   data-rgb="0,0,255">Blue</button>
+        <button class="preset-sakura" data-rgb="255,96,128">Sakura</button>
+        <button class="preset-off"    data-rgb="0,0,0">Off</button>
+      </div>
+      <div class="row"><label>R</label><input type="range" id="sl-r" min="0" max="255" value="0"><span id="lbl-r" class="val-mono">0</span></div>
+      <div class="row"><label>G</label><input type="range" id="sl-g" min="0" max="255" value="0"><span id="lbl-g" class="val-mono">0</span></div>
+      <div class="row"><label>B</label><input type="range" id="sl-b" min="0" max="255" value="0"><span id="lbl-b" class="val-mono">0</span></div>
+      <div class="row"><label>preview</label><div id="led-swatch" class="swatch" style="flex:1;height:24px;"></div></div>
+      <div style="font-size:10px;color:#888;margin-top:6px;">Note: 要 HEAD,0 (Winch Mode)。FW 側で 70% にスケール。</div>
+    </fieldset>
+    <fieldset id="g-motor" class="group">
+      <legend class="title">Motor control (Unit2 forwarded)</legend>
+      <div class="row"><label>Pitch ±60°</label><input type="range" id="sl-pitch" min="-60" max="60" value="0"><span id="lbl-pitch" class="val-mono">0</span></div>
+      <div class="row"><button id="btn-pitch-zero" style="width:100%;">Pitch → 0° (Horizontal)</button></div>
+      <div class="row"><label>Yaw ±20 rad/s</label><input type="range" id="sl-yaw" min="-200" max="200" value="0"><span id="lbl-yaw" class="val-mono">0.0</span></div>
+      <div class="row"><button id="btn-yaw-stop" class="danger" style="width:100%;">STOP YAW (Y0)</button></div>
+      <div class="row"><button id="btn-set-horizon" class="primary" style="width:100%;">Calibrate Horizon (SET_HORIZON)</button></div>
+      <div class="row"><button id="btn-clear-cal" style="width:100%;">Clear Pitch Cal (CLEAR_CAL)</button></div>
+      <div class="row"><button id="btn-cal-yaw" style="width:100%;">Yaw Calibration (CAL,YAW)</button></div>
+    </fieldset>
+    <fieldset id="g-flash" class="group">
+      <legend class="title">Firmware install (USB Serial flash)</legend>
+      <div style="font-size:10px;color:#888;margin-bottom:6px;line-height:1.5;">
+        先に <b>Disconnect</b> してから実行。S3 上の最新 firmware を直接焼く (app partition のみ書き換え、bootloader/partition は既存維持)。<br>
+        対象: <b>Winch</b> は ESP32-S3 DevKitC (DTR/RTS auto reset)、<b>Unit1/Unit2</b> は XIAO ESP32-S3 (native USB-CDC)。
+      </div>
+      <div class="row">
+        <esp-web-install-button manifest="manifest_winch.json" style="width:100%;">
+          <button slot="activate" style="width:100%;">⚡ Install Winch (latest)</button>
+        </esp-web-install-button>
+      </div>
+      <div class="row">
+        <esp-web-install-button manifest="manifest_unit1.json" style="width:100%;">
+          <button slot="activate" style="width:100%;">⚡ Install Unit1 (latest)</button>
+        </esp-web-install-button>
+      </div>
+      <div class="row">
+        <esp-web-install-button manifest="manifest_unit2.json" style="width:100%;">
+          <button slot="activate" style="width:100%;">⚡ Install Unit2 (latest)</button>
+        </esp-web-install-button>
+      </div>
+    </fieldset>
+  </div>
+  <div class="panel" style="overflow:hidden;display:flex;flex-direction:column;gap:10px;">
+    <fieldset class="group" style="flex:1 1 auto;display:flex;flex-direction:column;min-height:0;">
+      <legend class="title">Tube model — attitude (BNO055)</legend>
+      <canvas id="threed"></canvas>
+      <div style="font-size:10px;color:#888;margin-top:6px;">+Z up, -Y=GR(Front), +Y=CR(Rear), +X=Pitch motor side</div>
+    </fieldset>
+    <fieldset class="group" style="flex:0 0 auto;">
+      <legend class="title">GridEye centroid (cx, cy : 0–7, center 3.5)</legend>
+      <canvas id="centroid"></canvas>
+    </fieldset>
+  </div>
+  <div class="panel" style="display:flex;flex-direction:column;gap:10px;min-height:0;">
+    <fieldset class="group">
+      <legend class="title">Telemetry</legend>
+      <div class="telem-grid">
+        <div class="k">qw</div><div class="v" id="v-qw">--</div>
+        <div class="k">qx</div><div class="v" id="v-qx">--</div>
+        <div class="k">qy</div><div class="v" id="v-qy">--</div>
+        <div class="k">qz</div><div class="v" id="v-qz">--</div>
+        <div class="k">cx</div><div class="v" id="v-cx">--</div>
+        <div class="k">cy</div><div class="v" id="v-cy">--</div>
+        <div class="k">spY</div><div class="v" id="v-spY">--</div>
+        <div class="k">spP</div><div class="v" id="v-spP">--</div>
+      </div>
+    </fieldset>
+    <fieldset class="group">
+      <legend class="title">Heading (compass, rel boot)</legend>
+      <canvas id="compass"></canvas>
+    </fieldset>
+    <fieldset class="group" style="flex:1 1 auto;display:flex;flex-direction:column;min-height:0;">
+      <legend class="title">Serial log</legend>
+      <div id="log"></div>
+      <div class="row" style="margin-top:6px;">
+        <input type="text" id="cmd-input" placeholder="Custom command (Enter to send)" style="flex:1;" />
+        <button id="btn-send">Send</button>
+        <button id="btn-clear-log">Clear</button>
+      </div>
+    </fieldset>
+  </div>
+</main>
+<footer>Web Serial: HTTPS or localhost, Chromium 系ブラウザのみ。<span style="float:right;"><a href="README.md" style="color:#88c;">README</a></span></footer>
+
+<script type="importmap">
+{ "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+</script>
+<script type="module">
+import * as THREE from 'three';
+
+// Hex colours as strings to avoid linting issues with large numeric literals.
+const COL = {
+  bg: '#07070b', pcb: '#9e993d', housing: '#4a4a55', silver: '#8a8a92',
+  yawBlue: '#335ad6', rwRed: '#d63333', pitchRed: '#d63333',
+  bno: '#335aa0', grideye: '#202024', bridgeF: '#f08c33', bridgeR: '#f08c8c',
+  ledOff: '#202028', arrow: '#ff8a4d', sceneBg: '#07070b'
+};
+
+const state = {
+  port: null, reader: null, writer: null, connected: false,
+  unitType: null, detectTimer: null, packetCount: 0, lastPacketT: 0,
+  lastTelem: {}, rateWindow: [],
+  pendingPitch: null, pendingYaw: null, pendingRgb: null,
+  grideyeOn: null,
+  fwVersion: null, // populated from "U1_FW=..." / "U2_FW=..." lines
+};
+
+if (!('serial' in navigator)) {
+  document.getElementById('serial-warn').style.display = '';
+  document.getElementById('btn-connect').disabled = true;
+}
+
+const $ = (id) => document.getElementById(id);
+
+function log(kind, msg) {
+  const el = $('log');
+  const div = document.createElement('div');
+  div.className = `log-${kind}`;
+  const t = new Date().toLocaleTimeString();
+  div.textContent = `[${t}] ${msg}`;
+  el.appendChild(div);
+  el.scrollTop = el.scrollHeight;
+  while (el.childNodes.length > 500) el.removeChild(el.firstChild);
+}
+
+function setUnit(type, reason='') {
+  if (state.unitType === type) return;
+  state.unitType = type;
+  if (state.detectTimer) { clearTimeout(state.detectTimer); state.detectTimer = null; }
+  log('info', `DETECT: ${type}${reason?` (${reason})`:''}`);
+  applyUnitUI();
+}
+
+function applyUnitUI() {
+  const u1 = state.unitType === 'UNIT1', u2 = state.unitType === 'UNIT2';
+  $('g-stream').classList.toggle('disabled', !u1);
+  $('g-mode').classList.toggle('disabled', !u1);
+  $('g-led').classList.toggle('disabled', !u1);
+  $('g-motor').classList.toggle('disabled', !u2);
+  const pill = $('unit-pill');
+  pill.style = '';
+  if (u1) { pill.textContent = 'UNIT 1'; pill.className = 'status-pill ok'; }
+  else if (u2) { pill.textContent = 'UNIT 2'; pill.className = 'status-pill'; pill.style.background='#1c4f7c'; pill.style.borderColor='#4af'; pill.style.color='#fff'; }
+  else if (state.connected) { pill.textContent = 'Detecting…'; pill.className = 'status-pill warn'; }
+  else { pill.textContent = 'Not Connected'; pill.className = 'status-pill'; }
+}
+
+async function connectSerial() {
+  if (!('serial' in navigator)) { log('err', 'Web Serial API not available.'); return; }
+  try {
+    state.port = await navigator.serial.requestPort();
+    await state.port.open({ baudRate: 115200 });
+    state.connected = true;
+    log('info', 'Port opened.');
+    state.writer = state.port.writable.getWriter();
+    state.unitType = null;
+    applyUnitUI();
+    $('btn-connect').disabled = true; $('btn-disconnect').disabled = false;
+    readLoop();
+    state.detectTimer = setTimeout(() => {
+      if (state.unitType === null) setUnit('UNIT2', 'no telemetry within 6s — assuming silent Unit2');
+    }, 6000);
+    setTimeout(() => sendCmd('j'), 300);
+    // Query firmware version (Unit1 v2.5.45+ / Unit2 v2.3.10+).
+    // Older firmware ignores the command silently; pill stays "FW: --".
+    setTimeout(() => sendCmd('VER?'), 500);
+  } catch (e) {
+    log('err', `connect failed: ${e.message || e}`);
+    state.connected = false;
+    $('btn-connect').disabled = false; $('btn-disconnect').disabled = true;
+  }
+}
+
+async function disconnectSerial() {
+  if (state.detectTimer) { clearTimeout(state.detectTimer); state.detectTimer = null; }
+  state.unitType = null; state.connected = false;
+  state.fwVersion = null;
+  $('fw-pill').textContent = 'FW: --';
+  if (state.reader) { try { await state.reader.cancel(); } catch {} state.reader = null; }
+  if (state.writer) { try { state.writer.releaseLock(); } catch {} state.writer = null; }
+  if (state.port)   { try { await state.port.close(); }   catch {} state.port = null; }
+  resetDisplays(); applyUnitUI();
+  $('btn-connect').disabled = false; $('btn-disconnect').disabled = true;
+  log('info', 'Disconnected.');
+}
+
+async function readLoop() {
+  const decoder = new TextDecoderStream();
+  state.port.readable.pipeTo(decoder.writable).catch(() => {});
+  const reader = decoder.readable.getReader();
+  state.reader = reader;
+  let buf = '';
+  try {
+    while (state.connected) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += value;
+      buf = buf.replace(/\}\{/g, '}\n{');
+      let nl;
+      while ((nl = buf.indexOf('\n')) !== -1) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (!line) continue;
+        handleLine(line);
+      }
+    }
+  } catch (e) { log('err', `read loop ended: ${e.message || e}`); }
+  if (state.connected) { log('warn', 'Stream ended unexpectedly (USB unplug?).'); disconnectSerial(); }
+}
+
+async function sendCmd(cmd) {
+  if (!state.connected || !state.writer) { log('warn', `(not connected) -> ${cmd}`); return; }
+  try {
+    const data = new TextEncoder().encode(cmd.endsWith('\n') ? cmd : cmd + '\n');
+    await state.writer.write(data);
+    log('tx', `-> ${cmd}`);
+  } catch (e) { log('err', `send failed: ${e.message || e}`); }
+}
+
+function handleLine(line) {
+  if (line.startsWith('{') && line.endsWith('}')) {
+    try {
+      const d = JSON.parse(line);
+      if ('qw' in d) { onTelemetry(d); return; }
+    } catch {}
+  }
+  log('rx', `<- ${line}`);
+  // Firmware version pickup. Either unit prints "U{1,2}_FW=X.X.X" at boot
+  // and in response to "VER?". Use this also as a strong unit-type signal.
+  const fwMatch = line.match(/^U([12])_FW=(\S+)/);
+  if (fwMatch) {
+    const unitTag = `UNIT${fwMatch[1]}`;
+    state.fwVersion = fwMatch[2];
+    $('fw-pill').textContent = `FW: ${unitTag.replace('UNIT','U')} ${fwMatch[2]}`;
+    if (state.unitType !== unitTag) setUnit(unitTag, `${unitTag} fw banner detected`);
+  }
+  if (state.unitType !== 'UNIT1' && (
+    line.includes('UNIT 1 FIRMWARE') ||
+    line.startsWith('BOOT:') ||
+    line.startsWith('BOOT_CAL:') ||
+    line.startsWith('BOOT_TEST:') ||
+    line.includes('Global Loop Alive')
+  )) setUnit('UNIT1', 'Unit1 marker in serial output');
+  if (line === 'GRIDEYE_ON')  { state.grideyeOn = true;  updateGrideyeButton(); }
+  if (line === 'GRIDEYE_OFF') { state.grideyeOn = false; updateGrideyeButton(); }
+}
+
+function onTelemetry(d) {
+  if (state.packetCount === 0) log('rx', `<- TELEM #1 (qw=${(+d.qw).toFixed(3)} qx=${(+d.qx).toFixed(3)} cx=${(+d.cx).toFixed(2)})`);
+  state.lastTelem = d;
+  state.lastPacketT = performance.now();
+  state.packetCount++;
+  if (state.unitType !== 'UNIT1') setUnit('UNIT1', 'telemetry JSON received');
+  $('v-qw').textContent = (+d.qw).toFixed(4);
+  $('v-qx').textContent = (+d.qx).toFixed(4);
+  $('v-qy').textContent = (+d.qy).toFixed(4);
+  $('v-qz').textContent = (+d.qz).toFixed(4);
+  $('v-cx').textContent = (+d.cx).toFixed(2);
+  $('v-cy').textContent = (+d.cy).toFixed(2);
+  $('v-spY').textContent = (+d.spY).toFixed(2);
+  $('v-spP').textContent = (+d.spP).toFixed(2);
+  setTubeQuat(+d.qw, +d.qx, +d.qy, +d.qz);
+  drawCompass(yawFromQuat(+d.qw, +d.qx, +d.qy, +d.qz) * 180 / Math.PI);
+  drawCentroid(+d.cx, +d.cy);
+}
+
+function resetDisplays() {
+  state.lastTelem = {}; state.packetCount = 0; state.rateWindow = [];
+  state.pendingPitch = state.pendingYaw = state.pendingRgb = null;
+  state.grideyeOn = null;
+  for (const k of ['qw','qx','qy','qz','cx','cy','spY','spP']) $('v-' + k).textContent = '--';
+  $('rate-pill').textContent = '-- Hz'; $('rate-pill').style.color = '';
+  for (const id of ['sl-r','sl-g','sl-b']) $(id).value = 0;
+  $('sl-pitch').value = 0; $('sl-yaw').value = 0;
+  $('lbl-r').textContent = '0'; $('lbl-g').textContent = '0'; $('lbl-b').textContent = '0';
+  $('lbl-pitch').textContent = '0'; $('lbl-yaw').textContent = '0.0';
+  $('led-swatch').style.background = 'rgb(0,0,0)';
+  setTubeQuat(1, 0, 0, 0);
+  drawCompass(null);
+  drawCentroid(0, 0);
+  setLedColor(0, 0, 0);
+  updateGrideyeButton();
+}
+
+function updateGrideyeButton() {
+  const b = $('btn-g');
+  if (state.grideyeOn === true)  { b.textContent = 'GridEye: ON  (g)'; b.style.background = '#1f6f2c'; b.style.borderColor = '#2c8'; }
+  else if (state.grideyeOn === false) { b.textContent = 'GridEye: OFF (g)'; b.style = ''; }
+  else { b.textContent = 'GridEye: ?  (g)'; b.style = ''; }
+}
+
+// ============ Compass ============
+const compassCanvas = $('compass');
+const cctx = compassCanvas.getContext('2d');
+function resizeCompass() {
+  const r = compassCanvas.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  compassCanvas.width = r.width * dpr; compassCanvas.height = r.height * dpr;
+  cctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  drawCompass(state.lastTelem.qw === undefined ? null : (yawFromQuat(+state.lastTelem.qw, +state.lastTelem.qx, +state.lastTelem.qy, +state.lastTelem.qz) * 180 / Math.PI));
+}
+function drawCompass(headingDeg) {
+  const dpr = window.devicePixelRatio || 1;
+  const W = compassCanvas.width / dpr, H = compassCanvas.height / dpr;
+  cctx.clearRect(0, 0, W, H);
+  const cx = W / 2, cy = H / 2 - 8, r = Math.min(W, H) / 2 - 16;
+  cctx.fillStyle = '#16161e'; cctx.strokeStyle = '#557'; cctx.lineWidth = 2;
+  cctx.beginPath(); cctx.arc(cx, cy, r, 0, Math.PI * 2); cctx.fill(); cctx.stroke();
+  cctx.strokeStyle = '#558'; cctx.lineWidth = 1;
+  for (let a = 0; a < 360; a += 30) {
+    const rad = (a - 90) * Math.PI / 180;
+    cctx.beginPath();
+    cctx.moveTo(cx + (r - 8) * Math.cos(rad), cy + (r - 8) * Math.sin(rad));
+    cctx.lineTo(cx + r * Math.cos(rad), cy + r * Math.sin(rad));
+    cctx.stroke();
+  }
+  cctx.font = 'bold 12px monospace'; cctx.textAlign = 'center'; cctx.textBaseline = 'middle';
+  for (const [label, ang, isN] of [['N',0,true],['E',90,false],['S',180,false],['W',270,false]]) {
+    const rad = (ang - 90) * Math.PI / 180;
+    cctx.fillStyle = isN ? '#f88' : '#aac';
+    cctx.fillText(label, cx + (r - 18) * Math.cos(rad), cy + (r - 18) * Math.sin(rad));
+  }
+  if (headingDeg === null || headingDeg === undefined) {
+    cctx.fillStyle = '#789'; cctx.font = '10px monospace';
+    cctx.fillText('no data', cx, H - 8);
+    return;
+  }
+  const compass = ((-headingDeg) % 360 + 360) % 360;
+  const rad = (compass - 90) * Math.PI / 180;
+  cctx.strokeStyle = '#f55'; cctx.lineWidth = 3;
+  cctx.beginPath(); cctx.moveTo(cx, cy);
+  cctx.lineTo(cx + (r - 22) * Math.cos(rad), cy + (r - 22) * Math.sin(rad)); cctx.stroke();
+  const radTail = (compass + 90) * Math.PI / 180;
+  cctx.strokeStyle = '#557';
+  cctx.beginPath(); cctx.moveTo(cx, cy);
+  cctx.lineTo(cx + r * 0.3 * Math.cos(radTail), cy + r * 0.3 * Math.sin(radTail)); cctx.stroke();
+  cctx.fillStyle = '#dde'; cctx.beginPath(); cctx.arc(cx, cy, 4, 0, Math.PI * 2); cctx.fill();
+  cctx.fillStyle = '#aac'; cctx.font = '11px monospace';
+  cctx.fillText(`yaw ${headingDeg.toFixed(1)}°  (rel boot)`, cx, H - 4);
+}
+function yawFromQuat(qw, qx, qy, qz) {
+  return Math.atan2(2 * (qw * qz + qx * qy), 1 - 2 * (qy * qy + qz * qz));
+}
+
+// ============ Centroid ============
+const centroidCanvas = $('centroid');
+const ectx = centroidCanvas.getContext('2d');
+function resizeCentroid() {
+  const r = centroidCanvas.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  centroidCanvas.width = r.width * dpr; centroidCanvas.height = r.height * dpr;
+  ectx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  drawCentroid(state.lastTelem.cx ?? 0, state.lastTelem.cy ?? 0);
+}
+function drawCentroid(cx, cy) {
+  const dpr = window.devicePixelRatio || 1;
+  const W = centroidCanvas.width / dpr, H = centroidCanvas.height / dpr;
+  const size = Math.min(W, H) - 10;
+  const ox = (W - size) / 2, oy = (H - size) / 2, cell = size / 8;
+  ectx.clearRect(0, 0, W, H);
+  ectx.fillStyle = '#16161e'; ectx.fillRect(ox, oy, size, size);
+  ectx.strokeStyle = '#446'; ectx.lineWidth = 1;
+  for (let i = 0; i <= 8; i++) {
+    ectx.beginPath();
+    ectx.moveTo(ox + i * cell, oy); ectx.lineTo(ox + i * cell, oy + size);
+    ectx.moveTo(ox, oy + i * cell); ectx.lineTo(ox + size, oy + i * cell);
+    ectx.stroke();
+  }
+  ectx.strokeStyle = '#669'; ectx.setLineDash([4, 4]);
+  const mx = ox + 3.5 * cell + cell / 2, my = oy + 3.5 * cell + cell / 2;
+  ectx.beginPath(); ectx.moveTo(mx, oy); ectx.lineTo(mx, oy + size); ectx.stroke();
+  ectx.beginPath(); ectx.moveTo(ox, my); ectx.lineTo(ox + size, my); ectx.stroke();
+  ectx.setLineDash([]);
+  if (cx === 0 && cy === 0) {
+    ectx.fillStyle = '#88a'; ectx.font = '12px monospace';
+    ectx.textAlign = 'center'; ectx.textBaseline = 'middle';
+    ectx.fillText('NO HEAT', W / 2, H / 2); return;
+  }
+  const px = ox + (cx + 0.5) * cell, py = oy + (cy + 0.5) * cell;
+  ectx.fillStyle = '#f55'; ectx.strokeStyle = '#fcc'; ectx.lineWidth = 2;
+  const rdot = Math.max(6, cell * 0.35);
+  ectx.beginPath(); ectx.arc(px, py, rdot, 0, Math.PI * 2); ectx.fill(); ectx.stroke();
+}
+
+// ============ Three.js tube ============
+const threedCanvas = $('threed');
+const renderer = new THREE.WebGLRenderer({ canvas: threedCanvas, antialias: false, powerPreference: 'high-performance' });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(COL.sceneBg);
+const camera = new THREE.PerspectiveCamera(35, 1, 0.1, 5000);
+camera.up.set(0, 0, 1);
+camera.position.set(380, -460, 260);
+camera.lookAt(0, 0, 0);
+scene.add(new THREE.AmbientLight(0xffffff, 0.55));
+const light = new THREE.DirectionalLight(0xffffff, 0.85);
+light.position.set(300, -250, 500);
+scene.add(light);
+const axes = new THREE.AxesHelper(60);
+axes.material.depthTest = false;
+scene.add(axes);
+const tubeRoot = new THREE.Group();
+scene.add(tubeRoot);
+
+const PCB_M = new THREE.MeshStandardMaterial({ color: COL.pcb, roughness: 0.7 });
+const HOUSING_M = new THREE.MeshStandardMaterial({ color: COL.housing, roughness: 0.5 });
+const SILVER_M = new THREE.MeshStandardMaterial({ color: COL.silver, roughness: 0.4 });
+const YAW_M = new THREE.MeshStandardMaterial({ color: COL.yawBlue, roughness: 0.4 });
+const RW_M = new THREE.MeshStandardMaterial({ color: COL.rwRed, roughness: 0.5 });
+const PITCH_M = new THREE.MeshStandardMaterial({ color: COL.pitchRed, roughness: 0.5 });
+const BNO_M = new THREE.MeshStandardMaterial({ color: COL.bno, roughness: 0.4 });
+const GRIDEYE_M = new THREE.MeshStandardMaterial({ color: COL.grideye, roughness: 0.6 });
+const BRIDGE_F_M = new THREE.MeshStandardMaterial({ color: COL.bridgeF, roughness: 0.5 });
+const BRIDGE_R_M = new THREE.MeshStandardMaterial({ color: COL.bridgeR, roughness: 0.5 });
+
+// HD plate (elliptical)
+{
+  const g = new THREE.CylinderGeometry(36, 36, 4, 48);
+  g.scale(29.5 / 36, 1, 1);
+  g.rotateX(Math.PI / 2);
+  const m = new THREE.Mesh(g, PCB_M); m.position.set(-10.5, 4, -4); tubeRoot.add(m);
+}
+{ // MCU
+  const g = new THREE.BoxGeometry(14, 16.5, 10);
+  const m1 = new THREE.Mesh(g, SILVER_M); m1.position.set(0, -21.75, -1); tubeRoot.add(m1);
+  const m2 = new THREE.Mesh(g, SILVER_M); m2.position.set(0,  21.75, -1); tubeRoot.add(m2);
+}
+{ // Slipring
+  const g = new THREE.CylinderGeometry(6, 6, 14, 24); g.rotateX(Math.PI / 2);
+  const m = new THREE.Mesh(g, HOUSING_M); m.position.set(-1.5, -7, 4); tubeRoot.add(m);
+}
+{ // Cable
+  const g = new THREE.CylinderGeometry(1.7, 1.7, 210, 12); g.rotateX(Math.PI / 2);
+  const m = new THREE.Mesh(g, SILVER_M); m.position.set(0, 0, 113); tubeRoot.add(m);
+}
+{ // YAW rotor
+  const g = new THREE.CylinderGeometry(20.5, 20.5, 9.4, 32); g.rotateX(Math.PI / 2);
+  const m = new THREE.Mesh(g, YAW_M); m.position.set(-2, 1.5, -17.5); tubeRoot.add(m);
+}
+{ // YAW stator
+  const g = new THREE.CylinderGeometry(8, 8, 4.5, 24); g.rotateX(Math.PI / 2);
+  const m = new THREE.Mesh(g, HOUSING_M); m.position.set(-1.5, 8.5, -10.5); tubeRoot.add(m);
+}
+{ // RW half-disc
+  const shape = new THREE.Shape();
+  shape.moveTo(-30, 0); shape.absarc(0, 0, 30, Math.PI, 0, true); shape.lineTo(-30, 0);
+  const g = new THREE.ExtrudeGeometry(shape, { depth: 4.5, bevelEnabled: false });
+  g.translate(0, 0, -2.25);
+  const m = new THREE.Mesh(g, RW_M); m.position.set(-3, 0, -17.7); tubeRoot.add(m);
+}
+{ // Pitch rotor
+  const g = new THREE.CylinderGeometry(10.5, 10.5, 9.4, 24); g.rotateZ(Math.PI / 2);
+  const m = new THREE.Mesh(g, SILVER_M); m.position.set(24.5, 1.9, -1.8); tubeRoot.add(m);
+}
+{ // Pitch end-bell
+  const g = new THREE.CylinderGeometry(9.5, 9.5, 1.5, 24); g.rotateZ(Math.PI / 2);
+  const m = new THREE.Mesh(g, PITCH_M); m.position.set(28.7, 1.9, -1.8); tubeRoot.add(m);
+}
+function makePcbAnnulus(yPos) {
+  const shape = new THREE.Shape();
+  shape.absarc(0, 0, 40.5, 0, Math.PI * 2, false);
+  const hole = new THREE.Path();
+  hole.absarc(0, 0, 18, 0, Math.PI * 2, true);
+  shape.holes.push(hole);
+  const g = new THREE.ExtrudeGeometry(shape, { depth: 1.5, bevelEnabled: false });
+  g.translate(0, 0, -0.75);
+  g.scale(43 / 40.5, 1, 1);
+  g.rotateX(Math.PI / 2);
+  const m = new THREE.Mesh(g, PCB_M); m.position.set(0, yPos, 0);
+  return m;
+}
+tubeRoot.add(makePcbAnnulus(0));         // PR
+tubeRoot.add(makePcbAnnulus(-106.5));    // GR
+tubeRoot.add(makePcbAnnulus( 106.5));    // CR
+{ // GridEye
+  const g = new THREE.BoxGeometry(14, 8, 14);
+  const m = new THREE.Mesh(g, GRIDEYE_M); m.position.set(0, -113.5, 0); tubeRoot.add(m);
+}
+{ // BNO055
+  const g = new THREE.BoxGeometry(18, 11, 2.6);
+  const m = new THREE.Mesh(g, BNO_M); m.position.set(0, 112.5, 0.3); tubeRoot.add(m);
+}
+{ // Bridge wires
+  const wireGeo = new THREE.CylinderGeometry(0.6, 0.6, 107, 6);
+  const r = 33, N = 6;
+  for (let i = 0; i < N; i++) {
+    const a = (Math.PI * 2 * i) / N + Math.PI / 6;
+    const x = r * Math.cos(a), z = r * Math.sin(a);
+    const mF = new THREE.Mesh(wireGeo, BRIDGE_F_M); mF.position.set(x, -53.5, z); tubeRoot.add(mF);
+    const mR = new THREE.Mesh(wireGeo, BRIDGE_R_M); mR.position.set(x,  53.5, z); tubeRoot.add(mR);
+  }
+}
+// LEDs: single InstancedMesh of 96 = 1 draw call instead of 96 separate meshes.
+const LED_MAT = new THREE.MeshBasicMaterial({ color: COL.ledOff });
+const _ledColorCache = new THREE.Color();
+let needsRender = true;
+const LED_GEO = new THREE.SphereGeometry(1.6, 6, 4);  // low-poly: 24 tris each
+const LED_FACES_Y = [-108, -105, 105, 108];           // GR Front/Rear, CR Rear/Front
+const LED_PER_RING = 24;
+const LED_RING_RADIUS = 21;
+const LED_TOTAL = LED_FACES_Y.length * LED_PER_RING;
+const ledMesh = new THREE.InstancedMesh(LED_GEO, LED_MAT, LED_TOTAL);
+{
+  const m = new THREE.Matrix4();
+  let idx = 0;
+  for (const yFace of LED_FACES_Y) {
+    for (let i = 0; i < LED_PER_RING; i++) {
+      const a = (Math.PI * 2 * i) / LED_PER_RING;
+      m.setPosition(LED_RING_RADIUS * Math.cos(a), yFace, LED_RING_RADIUS * Math.sin(a));
+      ledMesh.setMatrixAt(idx++, m);
+    }
+  }
+  ledMesh.instanceMatrix.needsUpdate = true;
+}
+tubeRoot.add(ledMesh);
+{ // Forward arrow
+  const dir = new THREE.Vector3(1, 0, 0);
+  const origin = new THREE.Vector3(55, 0, -20);
+  const arrow = new THREE.ArrowHelper(dir, origin, 30, COL.arrow, 6, 4);
+  tubeRoot.add(arrow);
+}
+function setLedColor(r, g, b) {
+  const isOn = Math.max(r, g, b) > 12;
+  if (isOn) _ledColorCache.setRGB(r / 255, g / 255, b / 255);
+  else _ledColorCache.set(COL.ledOff);
+  LED_MAT.color.copy(_ledColorCache);
+  needsRender = true;
+}
+setLedColor(0, 0, 0);
+function setTubeQuat(qw, qx, qy, qz) {
+  // Apply raw BNO055 quaternion: ENU and our world frame both have Z up
+  tubeRoot.quaternion.set(qx, qy, qz, qw);
+  needsRender = true;
+}
+function resizeThreed() {
+  const r = threedCanvas.getBoundingClientRect();
+  renderer.setSize(r.width, r.height, false);
+  camera.aspect = r.width / r.height || 1;
+  camera.updateProjectionMatrix();
+  needsRender = true;
+}
+const RENDER_MIN_INTERVAL = 33;  // ms — cap at ~30 FPS
+let _lastRenderT = 0;
+function renderLoop() {
+  if (needsRender) {
+    const now = performance.now();
+    if (now - _lastRenderT >= RENDER_MIN_INTERVAL) {
+      renderer.render(scene, camera);
+      needsRender = false;
+      _lastRenderT = now;
+    }
+  }
+  requestAnimationFrame(renderLoop);
+}
+renderLoop();
+
+// ============ Throttle flush ============
+setInterval(() => {
+  if (!state.connected) {
+    state.pendingPitch = state.pendingYaw = state.pendingRgb = null; return;
+  }
+  if (state.pendingPitch !== null) { sendCmd(`POS,${state.pendingPitch}`); state.pendingPitch = null; }
+  if (state.pendingYaw !== null) { sendCmd(`Y${state.pendingYaw.toFixed(1)}`); state.pendingYaw = null; }
+  if (state.pendingRgb !== null) {
+    const [r, g, b] = state.pendingRgb;
+    setLedColor(r, g, b);                 // 3D update at 20Hz max
+    sendCmd(`RGB,${r},${g},${b}`);
+    state.pendingRgb = null;
+  }
+}, 50);
+
+// ============ Rate display ============
+setInterval(() => {
+  const now = performance.now();
+  state.rateWindow.push([now, state.packetCount]);
+  if (state.rateWindow.length > 20) state.rateWindow.shift();
+  if (state.rateWindow.length >= 2) {
+    const [t0, c0] = state.rateWindow[0];
+    const [t1, c1] = state.rateWindow[state.rateWindow.length - 1];
+    const dt = (t1 - t0) / 1000;
+    const rate = dt > 0 ? (c1 - c0) / dt : 0;
+    const stale = (now - state.lastPacketT) > 1000;
+    const pill = $('rate-pill');
+    pill.textContent = `${rate.toFixed(1)} Hz${stale ? ' (stale)' : ''}`;
+    pill.style.color = stale ? '#f88' : '#8f8';
+  }
+}, 100);
+
+// ============ UI bindings ============
+$('btn-connect').addEventListener('click', connectSerial);
+$('btn-disconnect').addEventListener('click', disconnectSerial);
+$('btn-j').addEventListener('click', () => sendCmd('j'));
+$('btn-s').addEventListener('click', () => sendCmd('s'));
+$('btn-g').addEventListener('click', () => sendCmd('g'));
+$('btn-track-on').addEventListener('click', () => sendCmd('POS,90'));
+$('btn-track-off').addEventListener('click', () => sendCmd('POS,0'));
+$('btn-head-1').addEventListener('click', () => sendCmd('HEAD,1'));
+$('btn-head-0').addEventListener('click', () => sendCmd('HEAD,0'));
+$('btn-dbg-ready').addEventListener('click', () => {
+  if (!confirm('USB Debug Mode\n\ncal をバイパスして CAL_READY 強制 + INIT,MOTORS 送信。\nWinch 接続中の機体には使わない (BNO mag-cal / tare がスキップされ姿勢検出が劣化)。\n\n続行?')) return;
+  sendCmd('DBG_READY');
+});
+$('btn-pitch-zero').addEventListener('click', () => {
+  $('sl-pitch').value = 0; $('lbl-pitch').textContent = '0';
+  state.pendingPitch = null; sendCmd('POS,0');
+});
+$('btn-yaw-stop').addEventListener('click', () => {
+  $('sl-yaw').value = 0; $('lbl-yaw').textContent = '0.0';
+  state.pendingYaw = null; sendCmd('Y0');
+});
+$('btn-set-horizon').addEventListener('click', () => sendCmd('SET_HORIZON'));
+$('btn-clear-cal').addEventListener('click', () => sendCmd('CLEAR_CAL'));
+$('btn-cal-yaw').addEventListener('click', () => sendCmd('CAL,YAW'));
+$('btn-clear-log').addEventListener('click', () => { $('log').innerHTML = ''; });
+$('btn-send').addEventListener('click', sendCustom);
+$('cmd-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') sendCustom(); });
+function sendCustom() {
+  const v = $('cmd-input').value.trim(); if (!v) return;
+  sendCmd(v); $('cmd-input').value = '';
+}
+$('sl-pitch').addEventListener('input', (e) => {
+  $('lbl-pitch').textContent = e.target.value;
+  state.pendingPitch = +e.target.value;
+});
+$('sl-yaw').addEventListener('input', (e) => {
+  const rads = e.target.value / 10;
+  $('lbl-yaw').textContent = rads.toFixed(1);
+  state.pendingYaw = rads;
+});
+function readRgb() { return [+$('sl-r').value, +$('sl-g').value, +$('sl-b').value]; }
+for (const id of ['sl-r','sl-g','sl-b']) {
+  $(id).addEventListener('input', () => {
+    const [r, g, b] = readRgb();
+    $('lbl-r').textContent = r; $('lbl-g').textContent = g; $('lbl-b').textContent = b;
+    $('led-swatch').style.background = `rgb(${r},${g},${b})`;
+    // 3D LED + serial cmd applied by the 50ms flush interval (decoupled from input)
+    state.pendingRgb = [r, g, b];
+  });
+}
+document.querySelectorAll('.preset-row button').forEach(b => {
+  b.addEventListener('click', () => {
+    const [r, g, b2] = b.dataset.rgb.split(',').map(x => +x);
+    $('sl-r').value = r; $('sl-g').value = g; $('sl-b').value = b2;
+    $('lbl-r').textContent = r; $('lbl-g').textContent = g; $('lbl-b').textContent = b2;
+    $('led-swatch').style.background = `rgb(${r},${g},${b2})`;
+    setLedColor(r, g, b2);
+    state.pendingRgb = null;
+    sendCmd(`RGB,${r},${g},${b2}`);
+  });
+});
+if ('serial' in navigator) {
+  navigator.serial.addEventListener('disconnect', (e) => {
+    if (state.port === e.target) {
+      log('warn', 'WATCHDOG: serial port disconnected (USB unplug?)');
+      disconnectSerial();
+    }
+  });
+}
+function resizeAll() { resizeThreed(); resizeCompass(); resizeCentroid(); }
+window.addEventListener('resize', resizeAll);
+applyUnitUI();
+requestAnimationFrame(resizeAll);
+if (location.search.includes('test=1')) {
+  window.__testHooks = { onTelemetry, handleLine, setTubeQuat, setLedColor, state, renderer };
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,16 @@
+{
+  "name": "FU Tube V2 Unit2",
+  "version": "latest",
+  "new_install_prompt_erase": false,
+  "builds": [
+    {
+      "chipFamily": "ESP32-S3",
+      "parts": [
+        {
+          "path": "https://comone-fragmented-unity-fw.s3.ap-northeast-1.amazonaws.com/tube_v2_unit2_product.bin",
+          "offset": 65536
+        }
+      ]
+    }
+  ]
+}
