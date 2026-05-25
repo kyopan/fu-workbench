@@ -146,6 +146,17 @@
       <legend class="title">GridEye centroid (cx, cy : 0–7, center 3.5)</legend>
       <canvas id="centroid"></canvas>
     </fieldset>
+    <fieldset class="group" style="flex:0 0 auto;">
+      <legend class="title">
+        IMU euler — last 10s
+        <span style="float:right;font-size:10px;font-weight:normal;">
+          <span style="color:#f55;">■</span> yaw
+          <span style="color:#5f5;margin-left:6px;">■</span> pitch
+          <span style="color:#6cf;margin-left:6px;">■</span> roll
+        </span>
+      </legend>
+      <canvas id="imu-graph" style="width:100%;height:140px;display:block;"></canvas>
+    </fieldset>
   </div>
   <div class="panel" style="display:flex;flex-direction:column;gap:10px;min-height:0;">
     <fieldset class="group">
@@ -195,6 +206,7 @@ const COL = {
 const state = {
   port: null, reader: null, writer: null, connected: false,
   demoMode: false, demoTimer: null, demoStartT: 0,
+  imuBuf: [],     // rolling buffer of {t, yaw, pitch, roll} for the IMU graph
   unitType: null, detectTimer: null, packetCount: 0, lastPacketT: 0,
   lastTelem: {}, rateWindow: [],
   pendingPitch: null, pendingYaw: null, pendingRgb: null,
@@ -435,6 +447,8 @@ function onTelemetry(d) {
   setTubeQuat(+d.qw, +d.qx, +d.qy, +d.qz);
   drawCompass(yawFromQuat(+d.qw, +d.qx, +d.qy, +d.qz) * 180 / Math.PI);
   drawCentroid(+d.cx, +d.cy);
+  pushImuSample(+d.qw, +d.qx, +d.qy, +d.qz);
+  drawImuGraph();
 }
 
 function resetDisplays() {
@@ -451,6 +465,8 @@ function resetDisplays() {
   setTubeQuat(1, 0, 0, 0);
   drawCompass(null);
   drawCentroid(0, 0);
+  state.imuBuf.length = 0;
+  drawImuGraph();
   setLedColor(0, 0, 0);
   updateGrideyeButton();
 }
@@ -514,6 +530,103 @@ function drawCompass(headingDeg) {
 }
 function yawFromQuat(qw, qx, qy, qz) {
   return Math.atan2(2 * (qw * qz + qx * qy), 1 - 2 * (qy * qy + qz * qz));
+}
+
+// Extract ZYX intrinsic euler angles (radians) from quaternion (qw,qx,qy,qz).
+// Returns { yaw: rot around Z, pitch: rot around Y, roll: rot around X }.
+function eulerFromQuat(qw, qx, qy, qz) {
+  const sinp = 2 * (qw * qy - qz * qx);
+  const pitch = Math.abs(sinp) >= 1 ? Math.sign(sinp) * Math.PI / 2 : Math.asin(sinp);
+  return {
+    yaw:   Math.atan2(2 * (qw * qz + qx * qy), 1 - 2 * (qy * qy + qz * qz)),
+    pitch: pitch,
+    roll:  Math.atan2(2 * (qw * qx + qy * qz), 1 - 2 * (qx * qx + qy * qy)),
+  };
+}
+
+// ---- IMU euler-vs-time graph ----
+const imuCanvas = $('imu-graph');
+const ictx = imuCanvas.getContext('2d');
+const IMU_WINDOW_MS = 10000;
+
+function resizeImuGraph() {
+  const r = imuCanvas.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  imuCanvas.width = r.width * dpr;
+  imuCanvas.height = r.height * dpr;
+  ictx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  drawImuGraph();
+}
+
+function drawImuGraph() {
+  const dpr = window.devicePixelRatio || 1;
+  const W = imuCanvas.width / dpr;
+  const H = imuCanvas.height / dpr;
+  if (W <= 0 || H <= 0) return;
+  ictx.clearRect(0, 0, W, H);
+
+  // background
+  ictx.fillStyle = '#0d0d14';
+  ictx.fillRect(0, 0, W, H);
+
+  // padding
+  const padL = 30, padR = 6, padT = 4, padB = 16;
+  const plotW = W - padL - padR;
+  const plotH = H - padT - padB;
+
+  // y-axis gridlines at ±180, ±90, 0
+  ictx.strokeStyle = '#26262e';
+  ictx.lineWidth = 1;
+  ictx.fillStyle = '#557';
+  ictx.font = '10px monospace';
+  ictx.textAlign = 'right';
+  ictx.textBaseline = 'middle';
+  for (const deg of [180, 90, 0, -90, -180]) {
+    const y = padT + plotH * (1 - (deg + 180) / 360);
+    ictx.beginPath(); ictx.moveTo(padL, y); ictx.lineTo(W - padR, y); ictx.stroke();
+    ictx.fillStyle = deg === 0 ? '#88a' : '#557';
+    ictx.fillText(deg.toString(), padL - 3, y);
+  }
+  // x-axis: now is right, -10s is left
+  ictx.fillStyle = '#557';
+  ictx.textAlign = 'left'; ictx.textBaseline = 'top';
+  ictx.fillText('-10s', padL + 1, H - padB + 2);
+  ictx.textAlign = 'right';
+  ictx.fillText('now', W - padR, H - padB + 2);
+
+  const buf = state.imuBuf;
+  if (buf.length < 2) return;
+  const tNow = buf[buf.length - 1].t;
+
+  function plotSeries(key, color) {
+    ictx.strokeStyle = color;
+    ictx.lineWidth = 1.2;
+    ictx.beginPath();
+    let started = false;
+    for (let i = 0; i < buf.length; i++) {
+      const s = buf[i];
+      const age = tNow - s.t;
+      if (age > IMU_WINDOW_MS) continue;
+      const x = padL + plotW * (1 - age / IMU_WINDOW_MS);
+      const deg = s[key] * 180 / Math.PI;
+      const y = padT + plotH * (1 - (deg + 180) / 360);
+      if (!started) { ictx.moveTo(x, y); started = true; }
+      else ictx.lineTo(x, y);
+    }
+    ictx.stroke();
+  }
+  plotSeries('yaw',   '#f55');
+  plotSeries('pitch', '#5f5');
+  plotSeries('roll',  '#6cf');
+}
+
+function pushImuSample(qw, qx, qy, qz) {
+  const e = eulerFromQuat(qw, qx, qy, qz);
+  const t = performance.now();
+  state.imuBuf.push({ t, ...e });
+  // Trim anything older than 2x window to bound memory
+  const cutoff = t - IMU_WINDOW_MS * 2;
+  while (state.imuBuf.length && state.imuBuf[0].t < cutoff) state.imuBuf.shift();
 }
 
 // ============ Centroid ============
@@ -832,7 +945,7 @@ if ('serial' in navigator) {
     }
   });
 }
-function resizeAll() { resizeThreed(); resizeCompass(); resizeCentroid(); }
+function resizeAll() { resizeThreed(); resizeCompass(); resizeCentroid(); resizeImuGraph(); }
 window.addEventListener('resize', resizeAll);
 applyUnitUI();
 requestAnimationFrame(resizeAll);
