@@ -68,6 +68,7 @@
     <span id="rate-pill" class="status-pill">-- Hz</span>
     <button id="btn-connect" class="primary">Connect</button>
     <button id="btn-disconnect" disabled>Disconnect</button>
+    <button id="btn-demo" title="動作デモ — 実機なしで筒を動かしてUIを試す" style="background:#7b3aa0;border-color:#a85aff;color:#fff;">🎬 Demo</button>
   </div>
 </header>
 <main>
@@ -193,6 +194,7 @@ const COL = {
 
 const state = {
   port: null, reader: null, writer: null, connected: false,
+  demoMode: false, demoTimer: null, demoStartT: 0,
   unitType: null, detectTimer: null, packetCount: 0, lastPacketT: 0,
   lastTelem: {}, rateWindow: [],
   pendingPitch: null, pendingYaw: null, pendingRgb: null,
@@ -227,12 +229,23 @@ function setUnit(type, reason='') {
 }
 
 function applyUnitUI() {
+  const pill = $('unit-pill');
+  if (state.demoMode) {
+    // Demo overrides: enable both Unit1 and Unit2 panels, distinctive pill
+    $('g-stream').classList.remove('disabled');
+    $('g-mode').classList.remove('disabled');
+    $('g-led').classList.remove('disabled');
+    $('g-motor').classList.remove('disabled');
+    pill.textContent = '🎬 DEMO';
+    pill.className = 'status-pill';
+    pill.style.background = '#7b3aa0'; pill.style.borderColor = '#c8a'; pill.style.color = '#fff';
+    return;
+  }
   const u1 = state.unitType === 'UNIT1', u2 = state.unitType === 'UNIT2';
   $('g-stream').classList.toggle('disabled', !u1);
   $('g-mode').classList.toggle('disabled', !u1);
   $('g-led').classList.toggle('disabled', !u1);
   $('g-motor').classList.toggle('disabled', !u2);
-  const pill = $('unit-pill');
   pill.style = '';
   if (u1) { pill.textContent = 'UNIT 1'; pill.className = 'status-pill ok'; }
   else if (u2) { pill.textContent = 'UNIT 2'; pill.className = 'status-pill'; pill.style.background='#1c4f7c'; pill.style.borderColor='#4af'; pill.style.color='#fff'; }
@@ -263,6 +276,70 @@ async function connectSerial() {
     log('err', `connect failed: ${e.message || e}`);
     state.connected = false;
     $('btn-connect').disabled = false; $('btn-disconnect').disabled = true;
+  }
+}
+
+function startDemo() {
+  if (state.demoMode) return;
+  if (state.connected) { log('warn', 'Demo: Disconnect first to start demo.'); return; }
+  state.demoMode = true;
+  state.demoStartT = performance.now();
+  $('btn-connect').disabled = true;
+  $('btn-demo').textContent = '■ Stop Demo';
+  $('btn-demo').style.background = '#9a2828';
+  $('btn-demo').style.borderColor = '#f55';
+  $('fw-pill').textContent = 'FW: v2-demo';
+  log('info', '🎬 Demo started — synthesised telemetry @ 10Hz.');
+  applyUnitUI();
+  state.demoTimer = setInterval(demoTick, 100);
+}
+
+function stopDemo() {
+  if (!state.demoMode) return;
+  state.demoMode = false;
+  state.unitType = null;   // demoTick → onTelemetry set UNIT1; clear it on stop
+  if (state.demoTimer) { clearInterval(state.demoTimer); state.demoTimer = null; }
+  $('btn-connect').disabled = false;
+  $('btn-demo').textContent = '🎬 Demo';
+  $('btn-demo').style.background = '#7b3aa0';
+  $('btn-demo').style.borderColor = '#a85aff';
+  $('fw-pill').textContent = 'FW: --';
+  resetDisplays();
+  applyUnitUI();
+  log('info', '⏹ Demo stopped.');
+}
+
+// Compose quaternion from yaw (Z) then pitch (X): q = qZ * qX
+function _quatYawPitch(yaw, pitch) {
+  const cy = Math.cos(yaw / 2), sy = Math.sin(yaw / 2);
+  const cp = Math.cos(pitch / 2), sp = Math.sin(pitch / 2);
+  // qZ = (cy, 0, 0, sy);  qX = (cp, sp, 0, 0)
+  // qZ * qX
+  return {
+    w: cy * cp - 0,
+    x: cy * sp + 0,
+    y: 0 + sy * sp,
+    z: sy * cp - 0,
+  };
+}
+
+function demoTick() {
+  const t = (performance.now() - state.demoStartT) / 1000;
+  const yaw   = t * 0.35;                              // ~3.4° / s
+  const pitch = Math.sin(t * 0.6) * 0.25;              // ±14° wobble
+  const q = _quatYawPitch(yaw, pitch);
+  const cx_demo = 3.5 + Math.cos(t * 0.7) * 1.6;
+  const cy_demo = 3.5 + Math.sin(t * 0.7) * 1.6;
+  const spY = Math.sin(t * 0.45) * 8;                  // mock yaw setpt
+  const spP = Math.sin(t * 0.65) * 5;                  // mock pitch setpt
+  onTelemetry({
+    qw: q.w, qx: q.x, qy: q.y, qz: q.z,
+    cx: +cx_demo.toFixed(2), cy: +cy_demo.toFixed(2),
+    spY: +spY.toFixed(2), spP: +spP.toFixed(2),
+  });
+  // Once per ~10s, sprinkle a fake "Global Loop Alive" log line for realism
+  if (Math.floor(t) !== Math.floor(t - 0.1) && Math.floor(t) % 10 === 0) {
+    log('rx', '<- Global Loop Alive  [demo]');
   }
 }
 
@@ -304,6 +381,7 @@ async function readLoop() {
 }
 
 async function sendCmd(cmd) {
+  if (state.demoMode) { log('tx', `-> [demo] ${cmd}`); return; }
   if (!state.connected || !state.writer) { log('warn', `(not connected) -> ${cmd}`); return; }
   try {
     const data = new TextEncoder().encode(cmd.endsWith('\n') ? cmd : cmd + '\n');
@@ -399,6 +477,7 @@ function drawCompass(headingDeg) {
   const W = compassCanvas.width / dpr, H = compassCanvas.height / dpr;
   cctx.clearRect(0, 0, W, H);
   const cx = W / 2, cy = H / 2 - 8, r = Math.min(W, H) / 2 - 16;
+  if (r <= 0) return;   // canvas not yet sized (e.g. tab hidden on load)
   cctx.fillStyle = '#16161e'; cctx.strokeStyle = '#557'; cctx.lineWidth = 2;
   cctx.beginPath(); cctx.arc(cx, cy, r, 0, Math.PI * 2); cctx.fill(); cctx.stroke();
   cctx.strokeStyle = '#558'; cctx.lineWidth = 1;
@@ -451,6 +530,7 @@ function drawCentroid(cx, cy) {
   const dpr = window.devicePixelRatio || 1;
   const W = centroidCanvas.width / dpr, H = centroidCanvas.height / dpr;
   const size = Math.min(W, H) - 10;
+  if (size <= 0) return;   // canvas not yet sized
   const ox = (W - size) / 2, oy = (H - size) / 2, cell = size / 8;
   ectx.clearRect(0, 0, W, H);
   ectx.fillStyle = '#16161e'; ectx.fillRect(ox, oy, size, size);
@@ -684,6 +764,7 @@ setInterval(() => {
 // ============ UI bindings ============
 $('btn-connect').addEventListener('click', connectSerial);
 $('btn-disconnect').addEventListener('click', disconnectSerial);
+$('btn-demo').addEventListener('click', () => { state.demoMode ? stopDemo() : startDemo(); });
 $('btn-j').addEventListener('click', () => sendCmd('j'));
 $('btn-s').addEventListener('click', () => sendCmd('s'));
 $('btn-g').addEventListener('click', () => sendCmd('g'));
