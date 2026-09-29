@@ -73,6 +73,17 @@
 </header>
 <main>
   <div class="panel">
+    <fieldset id="g-pcal" class="group" style="display:none;border-color:#4af;">
+      <legend class="title">ピッチの原点を取る (Unit2 に USB 直結)</legend>
+      <div id="pcal-now" style="font-size:15px;line-height:1.5;color:#fff;background:#1c2f45;border-radius:6px;padding:8px 10px;margin-bottom:8px;">① を押す</div>
+      <div class="row"><button id="btn-pcal-1" class="primary" style="width:100%;min-height:44px;font-size:15px;">① モーターを起こす</button></div>
+      <div class="row"><button id="btn-pcal-2" style="width:100%;min-height:44px;font-size:15px;" disabled>② いまの姿勢を水平として保存</button></div>
+      <div class="row"><button id="btn-pcal-3" style="width:100%;min-height:44px;font-size:15px;" disabled>③ 動きを確かめる (20° 傾けて戻す)</button></div>
+      <div class="row" id="pcal-ask" style="display:none;gap:8px;">
+        <button id="btn-pcal-yes" class="primary" style="flex:1;min-height:44px;font-size:15px;">はい、戻った</button>
+        <button id="btn-pcal-no" class="danger" style="flex:1;min-height:44px;font-size:15px;">いいえ</button>
+      </div>
+    </fieldset>
     <fieldset id="g-stream" class="group">
       <legend class="title">Telemetry stream (Unit1)</legend>
       <div class="row">
@@ -258,6 +269,8 @@ function applyUnitUI() {
   $('g-mode').classList.toggle('disabled', !u1);
   $('g-led').classList.toggle('disabled', !u1);
   $('g-motor').classList.toggle('disabled', !u2);
+  $('g-pcal').style.display = u2 ? '' : 'none';
+  if (!u2) pcalReset();
   pill.style = '';
   if (u1) { pill.textContent = 'UNIT 1'; pill.className = 'status-pill ok'; }
   else if (u2) { pill.textContent = 'UNIT 2'; pill.className = 'status-pill'; pill.style.background='#1c4f7c'; pill.style.borderColor='#4af'; pill.style.color='#fff'; }
@@ -410,6 +423,7 @@ function handleLine(line) {
     } catch {}
   }
   log('rx', `<- ${line}`);
+  pcalOnLine(line);
   // Firmware version pickup. Either unit prints "U{1,2}_FW=X.X.X" at boot
   // and in response to "VER?". Use this also as a strong unit-type signal.
   const fwMatch = line.match(/^U([12])_FW=(\S+)/);
@@ -898,6 +912,71 @@ $('btn-yaw-stop').addEventListener('click', () => {
   state.pendingYaw = null; sendCmd('Y0');
 });
 $('btn-set-horizon').addEventListener('click', () => sendCmd('SET_HORIZON'));
+
+// --- ピッチの原点を取る (Unit2 に USB 直結) ---------------------------------
+// Unit2 は INIT,MOTORS を受けるまでモーターを起こさず、原点が未保存の間は POS を無視する
+// (Unit2 v2.3.7〜)。Winch と Unit1 を通さずに直結した時は、この 2 つを道具が送る。
+var pcal = { step: 1, timer: null };   // var: applyUnitUI がこの行より先に走っても落ちない
+function pcalSay(text, kind) {
+  const el = $('pcal-now'); el.textContent = text;
+  el.style.background = kind === 'bad' ? '#5a1d1d' : kind === 'ok' ? '#1d4a2a' : kind === 'wait' ? '#4a3d1d' : '#1c2f45';
+}
+function pcalButtons() {
+  $('btn-pcal-1').disabled = pcal.step === 'wait1' || pcal.step === 'moving';
+  $('btn-pcal-2').disabled = !(pcal.step === 2 || pcal.step === 3 || pcal.step === 'done');
+  $('btn-pcal-3').disabled = !(pcal.step === 3 || pcal.step === 'done');
+  $('pcal-ask').style.display = pcal.step === 'ask' ? 'flex' : 'none';
+}
+function pcalReset() {
+  if (!pcal) return;
+  clearTimeout(pcal.timer); pcal.step = 1;
+  if ($('pcal-now')) { pcalSay('① を押す'); pcalButtons(); }
+}
+function pcalOnLine(line) {
+  if (!pcal || pcal.step !== 'wait1') return;
+  if (line.includes('Pitch initFOC OK')) {
+    clearTimeout(pcal.timer); pcal.step = 2;
+    pcalSay('① 済み (機体が「初期化 OK」と返した)。筒を手で水平に合わせて ② を押す', 'ok');
+  } else if (line.includes('Pitch initFOC FAILED')) {
+    clearTimeout(pcal.timer); pcal.step = 1;
+    pcalSay('モーターを起こせません (機体が「失敗」と返した)。主電源が入っているか確かめて、もう一度 ① を押す', 'bad');
+  } else return;
+  pcalButtons();
+}
+$('btn-pcal-1').addEventListener('click', () => {
+  if (!state.connected) { pcalSay('USB が繋がっていません。右上の Connect を押す', 'bad'); return; }
+  pcal.step = 'wait1'; pcalSay('モーターを起こしています… (筒が少し動きます。最大 10 秒)', 'wait'); pcalButtons();
+  sendCmd('INIT,MOTORS');
+  clearTimeout(pcal.timer);
+  pcal.timer = setTimeout(() => {
+    if (pcal.step !== 'wait1') return;
+    pcal.step = 2;      // 同じ電源投入の中で 2 回目の INIT,MOTORS には、機体は返事をしない
+    pcalSay('機体の返事がありません。電源を入れてから既に起こしてある時は返事をしません。筒を手で水平に合わせて ② へ進む', 'wait');
+    pcalButtons();
+  }, 10000);
+});
+$('btn-pcal-2').addEventListener('click', () => {
+  sendCmd('SET_HORIZON'); pcal.step = 3;
+  pcalSay('保存の指令を送りました (機体は返事をしません)。手を離して ③ を押し、動きで確かめる', 'wait');
+  pcalButtons();
+});
+$('btn-pcal-3').addEventListener('click', () => {
+  pcal.step = 'moving'; pcalSay('20° 傾けて、水平へ戻します…', 'wait'); pcalButtons();
+  $('sl-pitch').value = 0; $('lbl-pitch').textContent = '0'; state.pendingPitch = null;
+  sendCmd('POS,20');
+  clearTimeout(pcal.timer);
+  pcal.timer = setTimeout(() => {
+    sendCmd('POS,0');
+    pcal.timer = setTimeout(() => { pcal.step = 'ask'; pcalSay('筒は傾いて、水平に戻りましたか?'); pcalButtons(); }, 2500);
+  }, 2500);
+});
+$('btn-pcal-yes').addEventListener('click', () => {
+  pcal.step = 'done'; pcalSay('完了 (人の目で確認)。USB を抜いて次の筒へ。水平がずれていたら ② からやり直す', 'ok'); pcalButtons();
+});
+$('btn-pcal-no').addEventListener('click', () => {
+  pcal.step = 1; pcalSay('動かない時: 主電源を確かめて ① から。動いたが水平でない時: 水平に合わせ直して ② から', 'bad');
+  $('btn-pcal-2').disabled = false; $('btn-pcal-1').disabled = false; $('btn-pcal-3').disabled = true; $('pcal-ask').style.display = 'none';
+});
 $('btn-clear-cal').addEventListener('click', () => sendCmd('CLEAR_CAL'));
 $('btn-cal-yaw').addEventListener('click', () => sendCmd('CAL,YAW'));
 $('btn-clear-log').addEventListener('click', () => { $('log').innerHTML = ''; });
